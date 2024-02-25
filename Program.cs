@@ -9,7 +9,7 @@ public class Program
         model.Build(corpus, maxNGramSize);
 
         string[] startingContext = "wherefore art thou".ToLower().Split(" ");
-        string text = Generate(startingContext, model, maxNGramSize, 100, 0.0f, true);
+        string text = Generate(startingContext, model, maxNGramSize, 100, 0.1f, true);
         Console.WriteLine($"\n----------------------------------------");
         Console.WriteLine($"Generated text:\n {text}");
         Console.WriteLine($"\n----------------------------------------");
