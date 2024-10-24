@@ -1,19 +1,21 @@
-﻿namespace TinyLanguageModel;
+namespace TinyLanguageModel;
 public class Program
 {
     public static void Main(string[] args)
     {
         var model = new LanguageModel();
-        string corpus = File.ReadAllText("corpa/tinyshakespear.txt");
+        string corpus = File.ReadAllText("corpa/wikisent2.txt");
         var maxNGramSize = 3;
-        model.Build(corpus, maxNGramSize);
+ 
+        model.BuildAndSave(corpus, maxNGramSize);
 
-        string[] startingContext = "wherefore art thou".ToLower().Split(" ");
-        string text = Generate(startingContext, model, maxNGramSize, 100, 0.1f, true);
+        string[] startingContext = "whenever it is".ToLower().Split(" ");
+        string text = Generate(startingContext, model, maxNGramSize, 100000, 0.1f, true);
         Console.WriteLine($"\n----------------------------------------");
         Console.WriteLine($"Generated text:\n {text}");
         Console.WriteLine($"\n----------------------------------------");
     }
+
 
     private static string Generate(string[] startingContext, LanguageModel model, int maxNGramSize, int length, float temperature, bool stream)
     {
