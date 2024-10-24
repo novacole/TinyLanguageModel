@@ -1,3 +1,7 @@
+using System.Collections.Concurrent;
+using System.Security.Principal;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
 
 namespace TinyLanguageModel;
@@ -5,54 +9,163 @@ public class LanguageModel
 {
     private Dictionary<int, Dictionary<string, Dictionary<string, float>>> _probabilities;
     private static Dictionary<string, Dictionary<string, int>> _meanings = new();
+    private string _corpus = string.Empty;
     public LanguageModel()
     {
         _probabilities = new Dictionary<int, Dictionary<string, Dictionary<string, float>>>();
     }
-
-    public void Build(string corpus, int maxNGramSize)
+    public void BuildAndSave(string corpus, int maxNGramSize)
     {
-        var counts = new Dictionary<int, Dictionary<string, Dictionary<string, int>>>();
-
-        var sentences = Regex.Split(corpus, @"(\r?\n|\r|\n)");
-
-        foreach (var sentence in sentences)
+        _corpus = corpus;
+        if (TryLoadExistingData(out _probabilities, out _meanings))
         {
-            var words = Regex.Split(sentence.ToLower(), @"\s+|(?=\p{P})|(?<=\p{P})").Where(w => w != string.Empty).ToArray();
+            Console.WriteLine("Loaded probabilities and meanings from existing files.");
+            return;
+        }
+        if (File.Exists("checkpoint_20.json"))
+        {
+            LoadAndProcessDataFromCheckpoints(20);
+            return;
+        }
+        var sentences = Regex.Split(corpus, @"(\r?\n|\r|\n)").Where(x => !string.IsNullOrWhiteSpace(x)).ToArray();
+        var total = sentences.Length;
+        int checkpointSize = total / 20;  
+
+        if (total % 20 != 0)
+            checkpointSize++;
+
+        int currentCheckpoint = 1;
+
+        // Initialize data structure for counts
+        var counts = new Dictionary<int, Dictionary<string, Dictionary<string, int>>>(); // Keep counts outside the loop
+
+        for (int s = 0, curCount = 1; s < sentences.Length; s++, curCount++)
+        {
+            var words = Regex.Split(sentences[s].ToLower(), @"\s+|(?=\p{P})|(?<=\p{P})").Where(w => w != string.Empty).ToArray();
+            var wordLength = words.Length;
+            Console.WriteLine($"{curCount} of {total}");
 
             for (int n = 1; n <= maxNGramSize; n++)
             {
-                for (int i = 0; i <= words.Length - n; i++)
+                if (!counts.TryGetValue(n, out var nGramDictionary))
                 {
-                    string context = String.Join(" ", words.Skip(i).Take(n - 1));
+                    nGramDictionary = new Dictionary<string, Dictionary<string, int>>();
+                    counts[n] = nGramDictionary;
+                }
+
+                for (int i = 0; i <= wordLength - n; i++)
+                {
+                    string context = String.Join(" ", words, i, n - 1);
                     string word = words[i + n - 1];
-
-                    if (!counts.ContainsKey(n))
+                    if (!nGramDictionary.TryGetValue(context, out var contextDictionary))
                     {
-                        counts[n] = new Dictionary<string, Dictionary<string, int>>();
+                        contextDictionary = new Dictionary<string, int>();
+                        nGramDictionary[context] = contextDictionary;
                     }
 
-                    if (!counts[n].ContainsKey(context))
+                    contextDictionary.TryGetValue(word, out int wordCount);
+                    contextDictionary[word] = wordCount + 1;
+                }
+            }
+
+            // Save and clear data at each checkpoint
+            if ((curCount % checkpointSize == 0 || s == sentences.Length - 1) && curCount != 1)
+            {
+                Console.WriteLine($"Checkpoint {currentCheckpoint}: Saving partial data...");
+                SaveIntermediateData($"checkpoint_{currentCheckpoint}.json", counts);
+                currentCheckpoint++;
+                counts.Clear();  // Clear the data after saving
+                counts = new Dictionary<int, Dictionary<string, Dictionary<string, int>>>(); // Reinitialize counts
+            }
+        }
+
+        // Load data from all checkpoints, aggregate it, and process it
+        LoadAndProcessDataFromCheckpoints(currentCheckpoint - 1);
+    }
+
+    private void SaveIntermediateData(string filePath, Dictionary<int, Dictionary<string, Dictionary<string, int>>> data)
+    {
+        var options = new JsonSerializerOptions { WriteIndented = true };
+        File.WriteAllText(filePath, JsonSerializer.Serialize(data, options));
+        Console.WriteLine($"Data saved to {filePath}");
+    }
+
+    private void LoadAndProcessDataFromCheckpoints(int checkpointCount)
+    {
+        var aggregatedCounts = new Dictionary<int, Dictionary<string, Dictionary<string, int>>>();
+
+        for (int i = 1; i <= checkpointCount; i++)
+        {
+            string filePath = $"checkpoint_{i}.json";
+            string dataJson = File.ReadAllText(filePath);
+            var checkpointData = JsonSerializer.Deserialize<Dictionary<int, Dictionary<string, Dictionary<string, int>>>>(dataJson);
+            Console.WriteLine($"loading checkpoint {i}");
+            // Aggregate data
+            foreach (var n in checkpointData.Keys)
+            {
+                if (!aggregatedCounts.TryGetValue(n, out var mainDict))
+                {
+                    mainDict = new Dictionary<string, Dictionary<string, int>>();
+                    aggregatedCounts[n] = mainDict;
+                }
+
+                foreach (var context in checkpointData[n])
+                {
+                    if (!mainDict.TryGetValue(context.Key, out var wordDict))
                     {
-                        counts[n][context] = new Dictionary<string, int>();
+                        wordDict = new Dictionary<string, int>();
+                        mainDict[context.Key] = wordDict;
                     }
 
-                    if (!counts[n][context].ContainsKey(word))
+                    foreach (var word in context.Value)
                     {
-                        counts[n][context][word] = 0;
+                        if (!wordDict.TryGetValue(word.Key, out int count))
+                            wordDict[word.Key] = word.Value;
+                        else
+                            wordDict[word.Key] += word.Value;
                     }
-
-                    counts[n][context][word]++;
                 }
             }
         }
 
-        var probs = GenerateProbabilities(counts);
-
-        _probabilities = probs;
-        _meanings = ProcessMeanings(corpus);
+        // Final processing and saving of the complete data
+        ProcessAndSaveData(aggregatedCounts);
+    }
+    private void ProcessAndSaveData(Dictionary<int, Dictionary<string, Dictionary<string, int>>> counts)
+    {
+        _probabilities = GenerateProbabilities(counts.ToDictionary(x => x.Key, x => x.Value.ToDictionary(y => y.Key, y => y.Value.ToDictionary(z => z.Key, z => z.Value))));
+        counts = null;
+        _meanings = ProcessMeanings(_corpus);
+        _corpus = null;
+        var options = new JsonSerializerOptions { WriteIndented = true };
+        File.WriteAllText("probabilities.json", JsonSerializer.Serialize(_probabilities, options));
+        File.WriteAllText("meanings.json", JsonSerializer.Serialize(_meanings, options));
+        Console.WriteLine("Final data processed and saved.");
     }
 
+    private bool TryLoadExistingData(out Dictionary<int, Dictionary<string, Dictionary<string, float>>> probabilities, out Dictionary<string, Dictionary<string, int>> meanings)
+    {
+        probabilities = new Dictionary<int, Dictionary<string, Dictionary<string, float>>>();
+        meanings = new Dictionary<string, Dictionary<string, int>>();
+
+        bool dataLoaded = false;
+
+        if (File.Exists("probabilities.json") && new FileInfo("probabilities.json").Length > 0)
+        {
+            string probsJson = File.ReadAllText("probabilities.json");
+            probabilities = JsonSerializer.Deserialize<Dictionary<int, Dictionary<string, Dictionary<string, float>>>>(probsJson);
+            dataLoaded = true;
+        }
+
+        if (File.Exists("meanings.json") && new FileInfo("meanings.json").Length > 0)
+        {
+            string meaningsJson = File.ReadAllText("meanings.json");
+            meanings = JsonSerializer.Deserialize<Dictionary<string, Dictionary<string, int>>>(meaningsJson);
+            dataLoaded = true;
+        }
+
+        return dataLoaded;
+    }
     private static Dictionary<int, Dictionary<string, Dictionary<string, float>>> GenerateProbabilities(
         Dictionary<int, Dictionary<string, Dictionary<string, int>>> counts)
     {
@@ -276,7 +389,7 @@ public class LanguageModel
         if (understading.Count > 0)
         {
             var maxCount = understading.Select(x => x.Value.Count).Max();
-            finalResults = understading.Where(x => x.Value.Count >= maxCount -1).ToDictionary(x => x.Key, x => (float)(x.Value.Values.Average()));
+            finalResults = understading.Where(x => x.Value.Count >= maxCount - 1).ToDictionary(x => x.Key, x => (float)(x.Value.Values.Average()));
             var maxAverage = finalResults.Values.Max();
 
             if (finalResults.Count > 0)
