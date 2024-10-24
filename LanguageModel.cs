@@ -139,7 +139,6 @@ public class LanguageModel
         _corpus = null;
         var options = new JsonSerializerOptions { WriteIndented = true };
         File.WriteAllText("probabilities.json", JsonSerializer.Serialize(_probabilities, options));
-        File.WriteAllText("meanings.json", JsonSerializer.Serialize(_meanings, options));
         Console.WriteLine("Final data processed and saved.");
     }
 
@@ -305,46 +304,78 @@ public class LanguageModel
 
         return adjustedWeights.Keys.Last();
     }
-    private static Dictionary<string, Dictionary<string, int>> ProcessMeanings(string corpus)
+   private static Dictionary<string, Dictionary<string, int>> ProcessMeanings(string corpus)
+{
+    Dictionary<string, Dictionary<string, int>> wordMap = new Dictionary<string, Dictionary<string, int>>();
+
+    // Check if file exists
+    if (File.Exists("meanings.json"))
     {
-        var sentences = Regex.Split(corpus, @"\r\n|\r|\n");
-        var wordMap = new Dictionary<string, Dictionary<string, int>>();
-        int count = 0;
-        foreach (var sentence in sentences)
+        // Read the file and reconstruct the dictionary
+        using (var reader = new StreamReader(filePath))
         {
-            Console.WriteLine($"Processing {count++} of {sentences.Length}");
-            var words = Regex.Split(sentence.ToLower(), @"\s+|(?=\p{P})|(?<=\p{P})");
-            foreach (var keyWord in words)
+            string line;
+            string currentKeyword = null;
+            while ((line = reader.ReadLine()) != null)
             {
-                if (!wordMap.ContainsKey(keyWord))
+                if (line.StartsWith("Keyword: "))
                 {
-                    wordMap[keyWord] = new Dictionary<string, int>();
+                    currentKeyword = line.Substring(9);
+                    wordMap[currentKeyword] = new Dictionary<string, int>();
                 }
-
-                foreach (var word in words)
+                else if (!string.IsNullOrWhiteSpace(line) && currentKeyword != null)
                 {
-                    if (word != keyWord)
+                    var parts = line.Trim().Split(':');
+                    if (parts.Length == 2 && int.TryParse(parts[1], out int count))
                     {
-                        if (!wordMap[keyWord].ContainsKey(word))
-                        {
-                            wordMap[keyWord][word] = 0;
-                        }
-
-                        wordMap[keyWord][word]++;
+                        wordMap[currentKeyword][parts[0]] = count;
                     }
                 }
             }
         }
-
-        var sortedWordMap = new Dictionary<string, Dictionary<string, int>>();
-        foreach (var item in wordMap)
-        {
-            sortedWordMap[item.Key] = item.Value.OrderByDescending(pair => pair.Value)
-                                                .ToDictionary(pair => pair.Key, pair => pair.Value);
-        }
-
-        return sortedWordMap;
     }
+    else
+    {
+        var sentences = Regex.Split(corpus, @"\r\n|\r|\n");
+        using (var writer = new StreamWriter(filePath))
+        {
+            foreach (var sentence in sentences)
+            {
+                var words = Regex.Split(sentence.ToLower(), @"\s+|(?=\p{P})|(?<=\p{P})");
+                foreach (var keyWord in words)
+                {
+                    if (!wordMap.ContainsKey(keyWord))
+                    {
+                        wordMap[keyWord] = new Dictionary<string, int>();
+                    }
+
+                    foreach (var word in words)
+                    {
+                        if (word != keyWord)
+                        {
+                            if (!wordMap[keyWord].ContainsKey(word))
+                            {
+                                wordMap[keyWord][word] = 0;
+                            }
+
+                            wordMap[keyWord][word]++;
+                        }
+                    }
+
+                    // Write each keyword and its associated words with counts to the file
+                    writer.WriteLine($"Keyword: {keyWord}");
+                    foreach (var pair in wordMap[keyWord])
+                    {
+                        writer.WriteLine($"  {pair.Key}: {pair.Value}");
+                    }
+                    writer.WriteLine(); // Empty line for better readability
+                }
+            }
+        }
+    }
+
+    return wordMap;
+}
 
     private static Dictionary<string, float> AttendTo(List<string> targetWords)
     {
