@@ -29,7 +29,7 @@ public class LanguageModel
         }
         var sentences = Regex.Split(corpus, @"(\r?\n|\r|\n)").Where(x => !string.IsNullOrWhiteSpace(x)).ToArray();
         var total = sentences.Length;
-        int checkpointSize = total / 20;  
+        int checkpointSize = total / 20;
 
         if (total % 20 != 0)
             checkpointSize++;
@@ -163,6 +163,14 @@ public class LanguageModel
             meanings = JsonSerializer.Deserialize<Dictionary<string, Dictionary<string, int>>>(meaningsJson);
             dataLoaded = true;
         }
+        else
+        {
+            var options = new JsonSerializerOptions { WriteIndented = true };
+
+            _meanings = ProcessMeanings(_corpus);
+            // File.WriteAllText("meanings.json", JsonSerializer.Serialize(_meanings, options));
+            dataLoaded = true;
+        }
 
         return dataLoaded;
     }
@@ -206,7 +214,7 @@ public class LanguageModel
     public string Predict(string[] context, int maxNGramSize, float temperature, bool stream)
     {
         var candidates = new Dictionary<string, float>();
-        int attentionSpan = 100; // About 1.5 sentences. So we shouldnt expect long range coherence.
+        int attentionSpan = 1500; // About 1.5 sentences. So we shouldnt expect long range coherence.
         Dictionary<string, float> productOfAttention = new Dictionary<string, float>();
         int startLimit = context.Length;
         int endLimit = context.Length >= attentionSpan ? context.Length - attentionSpan : context.Length - context.Length;
@@ -256,7 +264,7 @@ public class LanguageModel
         {
             if (context.TakeLast(attentionSpan / 2).Contains(i))
             {
-                candidates[i] -= .1f;
+                //candidates[i] -= .05f;
             }
         }
         // Normalize scores
@@ -301,9 +309,10 @@ public class LanguageModel
     {
         var sentences = Regex.Split(corpus, @"\r\n|\r|\n");
         var wordMap = new Dictionary<string, Dictionary<string, int>>();
-
+        int count = 0;
         foreach (var sentence in sentences)
         {
+            Console.WriteLine($"Processing {count++} of {sentences.Length}");
             var words = Regex.Split(sentence.ToLower(), @"\s+|(?=\p{P})|(?<=\p{P})");
             foreach (var keyWord in words)
             {
@@ -342,7 +351,7 @@ public class LanguageModel
         var tempResults = new List<(string Key, float Probability, int MatchCount)>();
         int maxMatchCount = 0;
         Dictionary<string, Dictionary<string, float>> understading = new();
-        int maxAssociations = 50;
+        int maxAssociations = 500;
 
         foreach (var meaning in _meanings)
         {
@@ -354,7 +363,7 @@ public class LanguageModel
                                                  .Select(pair => pair.Key)
                                                  .ToHashSet();
 
-                int matchedCount = 0;
+                float matchedProbability = 0;
 
                 foreach (var targetWord in targetWords)
                 {
@@ -362,7 +371,7 @@ public class LanguageModel
                     {
                         if (_meanings.TryGetValue(targetWord, out var wordCounts) && wordCounts.TryGetValue(meaning.Key, out var count))
                         {
-                            matchedCount++;
+                            matchedProbability += count;
                             if (understading.ContainsKey(meaning.Key))
                             {
                                 understading[meaning.Key][targetWord] = count;
@@ -375,12 +384,10 @@ public class LanguageModel
                     }
                 }
 
-                if (matchedCount > 0)
+                if (matchedProbability > 0)
                 {
-                    if (matchedCount > maxMatchCount)
-                    {
-                        maxMatchCount = matchedCount;
-                    }
+                    tempResults.Add((meaning.Key, matchedProbability, 1));
+                    maxMatchCount = Math.Max(maxMatchCount, 1);
                 }
             }
         }
@@ -389,15 +396,17 @@ public class LanguageModel
         if (understading.Count > 0)
         {
             var maxCount = understading.Select(x => x.Value.Count).Max();
-            finalResults = understading.Where(x => x.Value.Count >= maxCount - 1).ToDictionary(x => x.Key, x => (float)(x.Value.Values.Average()));
-            var maxAverage = finalResults.Values.Max();
 
-            if (finalResults.Count > 0)
+            finalResults = understading.Select(x => new { Key = x.Key, Value = x.Value.Values.Sum() })
+                                       .ToDictionary(x => x.Key, x => x.Value);
+            var min = finalResults.Values.Min();
+            var max = finalResults.Values.Max();
+            if (max > 0)
             {
-                var max = finalResults.Values.Max();
-                foreach (var result in finalResults)
+                foreach (var result in finalResults.Keys.ToList())
                 {
-                    finalResults[result.Key] = ((max - result.Value) / maxCount) / maxAverage;
+                    finalResults[result] /= max;
+
                 }
             }
         }

@@ -4,13 +4,13 @@ public class Program
     public static void Main(string[] args)
     {
         var model = new LanguageModel();
-        string corpus = File.ReadAllText("corpa/wikisent2.txt");
+        string corpus = File.ReadAllText("C:\\Users\\colecarter\\TinyLanguageModel\\corpa\\allcombined.txt");
         var maxNGramSize = 3;
  
         model.BuildAndSave(corpus, maxNGramSize);
 
-        string[] startingContext = "whenever it is".ToLower().Split(" ");
-        string text = Generate(startingContext, model, maxNGramSize, 100000, 0.1f, true);
+        string[] startingContext = "barack obama was born".ToLower().Split(" ");
+        string text = Generate(startingContext, model, maxNGramSize, 100000, 0f, true);
         Console.WriteLine($"\n----------------------------------------");
         Console.WriteLine($"Generated text:\n {text}");
         Console.WriteLine($"\n----------------------------------------");
