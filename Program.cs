@@ -9,7 +9,7 @@ public class Program
  
         model.BuildAndSave(corpus, maxNGramSize);
 
-        string[] startingContext = "barack obama was born".ToLower().Split(" ");
+        string[] startingContext = "microsoft windows xp is a".ToLower().Split(" ");
         string text = Generate(startingContext, model, maxNGramSize, 100000, 0f, true);
         Console.WriteLine($"\n----------------------------------------");
         Console.WriteLine($"Generated text:\n {text}");

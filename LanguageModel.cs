@@ -1,4 +1,6 @@
 using System.Collections.Concurrent;
+using System.IO.Compression;
+using System.Runtime.Serialization.Formatters.Binary;
 using System.Security.Principal;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -167,6 +169,7 @@ public class LanguageModel
             var options = new JsonSerializerOptions { WriteIndented = true };
 
             _meanings = ProcessMeanings(_corpus);
+            // figure out what to do here. when using the allcombined dataset, the file is super large 10s of gigbytes. but also takes a long time to load into memory.
             // File.WriteAllText("meanings.json", JsonSerializer.Serialize(_meanings, options));
             dataLoaded = true;
         }
@@ -213,14 +216,14 @@ public class LanguageModel
     public string Predict(string[] context, int maxNGramSize, float temperature, bool stream)
     {
         var candidates = new Dictionary<string, float>();
-        int attentionSpan = 1500; // About 1.5 sentences. So we shouldnt expect long range coherence.
+        int attentionSpan = 1500; 
         Dictionary<string, float> productOfAttention = new Dictionary<string, float>();
         int startLimit = context.Length;
         int endLimit = context.Length >= attentionSpan ? context.Length - attentionSpan : context.Length - context.Length;
 
         productOfAttention = AttendTo(context.TakeLast(attentionSpan).ToList());
 
-        for (int n = maxNGramSize; n > 1; n--)
+        for (int n = maxNGramSize; n > 2; n--) // for now keep at 3, in future may use lower ngram to add options, but the allcombined.txt dataset is large enough that this doesn't seem necessary at this time.
         {
             string currentContext = string.Join(" ", context.TakeLast(n - 1));
 
@@ -233,15 +236,22 @@ public class LanguageModel
                     string word = wordProbability.Key;
                     float probability = wordProbability.Value;
                     if (!candidates.ContainsKey(word))
-                        candidates[word] = probability;
+                        candidates[word] = Math.Abs(probability);
 
                     if (productOfAttention.ContainsKey(word))
                     {
-                        candidates[word] += productOfAttention[word];
+                        candidates[word] += Math.Abs(productOfAttention[word]);
                     }
                     else
                     {
-                        candidates[word] -= .05f;
+
+                        if (candidates[word] - .05f < 0)
+                        {
+                            candidates[word] = 0;
+                        } else
+                        {
+                            candidates[word] -= .05f;
+                        }
                     }
                 }
 
@@ -263,7 +273,7 @@ public class LanguageModel
         {
             if (context.TakeLast(attentionSpan / 2).Contains(i))
             {
-                //candidates[i] -= .05f;
+                candidates[i] -= .05f;
             }
         }
         // Normalize scores
@@ -304,85 +314,55 @@ public class LanguageModel
 
         return adjustedWeights.Keys.Last();
     }
-   private static Dictionary<string, Dictionary<string, int>> ProcessMeanings(string corpus)
-{
-    Dictionary<string, Dictionary<string, int>> wordMap = new Dictionary<string, Dictionary<string, int>>();
-
-    // Check if file exists
-    if (File.Exists("meanings.json"))
+    private static Dictionary<string, Dictionary<string, int>> ProcessMeanings(string corpus)
     {
-        // Read the file and reconstruct the dictionary
-        using (var reader = new StreamReader(filePath))
-        {
-            string line;
-            string currentKeyword = null;
-            while ((line = reader.ReadLine()) != null)
+        Dictionary<string, Dictionary<string, int>> wordMap = new Dictionary<string, Dictionary<string, int>>();
+        var filePath = "meanings.json";
+        // Check if file exists
+       
+            int count = 0;
+            var sentences = Regex.Split(corpus, @"\r\n|\r|\n");
+            using (var writer = new StreamWriter(filePath))
             {
-                if (line.StartsWith("Keyword: "))
+                foreach (var sentence in sentences)
                 {
-                    currentKeyword = line.Substring(9);
-                    wordMap[currentKeyword] = new Dictionary<string, int>();
-                }
-                else if (!string.IsNullOrWhiteSpace(line) && currentKeyword != null)
-                {
-                    var parts = line.Trim().Split(':');
-                    if (parts.Length == 2 && int.TryParse(parts[1], out int count))
+                    Console.WriteLine($"Processing sentence {++count} of {sentences.Length}");
+                    var words = Regex.Split(sentence.ToLower(), @"\s+|(?=\p{P})|(?<=\p{P})");
+                    foreach (var keyWord in words)
                     {
-                        wordMap[currentKeyword][parts[0]] = count;
-                    }
-                }
-            }
-        }
-    }
-    else
-    {
-        var sentences = Regex.Split(corpus, @"\r\n|\r|\n");
-        using (var writer = new StreamWriter(filePath))
-        {
-            foreach (var sentence in sentences)
-            {
-                var words = Regex.Split(sentence.ToLower(), @"\s+|(?=\p{P})|(?<=\p{P})");
-                foreach (var keyWord in words)
-                {
-                    if (!wordMap.ContainsKey(keyWord))
-                    {
-                        wordMap[keyWord] = new Dictionary<string, int>();
-                    }
-
-                    foreach (var word in words)
-                    {
-                        if (word != keyWord)
+                        if (!wordMap.ContainsKey(keyWord))
                         {
-                            if (!wordMap[keyWord].ContainsKey(word))
-                            {
-                                wordMap[keyWord][word] = 0;
-                            }
-
-                            wordMap[keyWord][word]++;
+                            wordMap[keyWord] = new Dictionary<string, int>();
                         }
-                    }
 
-                    // Write each keyword and its associated words with counts to the file
-                    writer.WriteLine($"Keyword: {keyWord}");
-                    foreach (var pair in wordMap[keyWord])
-                    {
-                        writer.WriteLine($"  {pair.Key}: {pair.Value}");
+                        foreach (var word in words)
+                        {
+                            if (word != keyWord)
+                            {
+                                if (!wordMap[keyWord].ContainsKey(word))
+                                {
+                                    wordMap[keyWord][word] = 0;
+                                }
+
+                                wordMap[keyWord][word]++;
+                            }
+                        }
+
                     }
-                    writer.WriteLine(); // Empty line for better readability
                 }
+            
             }
-        }
-    }
+        
 
-    return wordMap;
-}
+        return wordMap;
+    }
 
     private static Dictionary<string, float> AttendTo(List<string> targetWords)
     {
         var tempResults = new List<(string Key, float Probability, int MatchCount)>();
         int maxMatchCount = 0;
         Dictionary<string, Dictionary<string, float>> understading = new();
-        int maxAssociations = 500;
+        int maxAssociations = 150;
 
         foreach (var meaning in _meanings)
         {
@@ -394,7 +374,7 @@ public class LanguageModel
                                                  .Select(pair => pair.Key)
                                                  .ToHashSet();
 
-                float matchedProbability = 0;
+                int matchedCount = 0;
 
                 foreach (var targetWord in targetWords)
                 {
@@ -402,7 +382,7 @@ public class LanguageModel
                     {
                         if (_meanings.TryGetValue(targetWord, out var wordCounts) && wordCounts.TryGetValue(meaning.Key, out var count))
                         {
-                            matchedProbability += count;
+                            matchedCount++;
                             if (understading.ContainsKey(meaning.Key))
                             {
                                 understading[meaning.Key][targetWord] = count;
@@ -415,10 +395,12 @@ public class LanguageModel
                     }
                 }
 
-                if (matchedProbability > 0)
+                if (matchedCount > 0)
                 {
-                    tempResults.Add((meaning.Key, matchedProbability, 1));
-                    maxMatchCount = Math.Max(maxMatchCount, 1);
+                    if (matchedCount > maxMatchCount)
+                    {
+                        maxMatchCount = matchedCount;
+                    }
                 }
             }
         }
@@ -428,7 +410,7 @@ public class LanguageModel
         {
             var maxCount = understading.Select(x => x.Value.Count).Max();
 
-            finalResults = understading.Select(x => new { Key = x.Key, Value = x.Value.Values.Sum() })
+            finalResults = understading.Where(x => x.Value.Count >= maxCount - 1).Select(x => new { Key = x.Key, Value = x.Value.Values.Average() })
                                        .ToDictionary(x => x.Key, x => x.Value);
             var min = finalResults.Values.Min();
             var max = finalResults.Values.Max();
